@@ -1,0 +1,561 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>Mr.Hem — Hand Box</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { background:#000; overflow:hidden; width:100vw; height:100vh; }
+
+  /* CAMERA FEED — fullscreen background, mirrored */
+  #videoEl {
+    position:fixed;
+    top:0; left:0;
+    width:100%; height:100%;
+    object-fit:cover;
+    transform: scaleX(-1);   /* mirror so it feels natural */
+    z-index:0;
+    opacity:1;
+  }
+
+  /* Dark overlay so 3D pops */
+  #overlay {
+    position:fixed;
+    top:0; left:0; width:100%; height:100%;
+    background: rgba(0,0,0,0.45);
+    z-index:1;
+    pointer-events:none;
+  }
+
+  /* Hand skeleton canvas (2D) */
+  #handCanvas {
+    position:fixed;
+    top:0; left:0;
+    width:100%; height:100%;
+    z-index:2;
+    pointer-events:none;
+    transform: scaleX(-1);
+  }
+
+  /* Three.js canvas on top */
+  #threeCanvas {
+    position:fixed;
+    top:0; left:0;
+    width:100%; height:100%;
+    z-index:3;
+    pointer-events:none;
+  }
+
+  /* UI layer */
+  #ui {
+    position:fixed;
+    top:0; left:0; width:100%; height:100%;
+    z-index:10;
+    pointer-events:none;
+  }
+
+  #title {
+    position:absolute; top:16px; left:50%; transform:translateX(-50%);
+    font-family:'Courier New',monospace; font-size:clamp(10px,3vw,15px);
+    letter-spacing:0.35em; color:#00f5ff; text-transform:uppercase;
+    white-space:nowrap;
+    text-shadow:0 0 8px #00f5ff,0 0 25px #00f5ff,0 0 50px #00aaff;
+    animation:glow 2.5s ease-in-out infinite;
+  }
+  @keyframes glow {
+    0%,100%{ text-shadow:0 0 8px #00f5ff,0 0 25px #00f5ff,0 0 50px #00aaff; }
+    50%{ text-shadow:0 0 3px #00f5ff,0 0 10px #00f5ff,0 0 20px #00aaff; }
+  }
+
+  #gestureMsg {
+    position:absolute; top:50px; left:50%; transform:translateX(-50%);
+    font-family:'Courier New',monospace; font-size:clamp(12px,3.5vw,20px);
+    letter-spacing:0.2em; color:#ffcc00;
+    text-shadow:0 0 15px #ffcc00, 0 0 30px #ff8800;
+    white-space:nowrap; opacity:0;
+    transition:opacity 0.15s;
+  }
+
+  #statusBar {
+    position:absolute; bottom:0; left:0; right:0;
+    padding:10px 16px 16px;
+    background:linear-gradient(transparent, rgba(0,0,0,0.75));
+    display:flex; justify-content:space-between; align-items:flex-end;
+  }
+
+  #handStatus {
+    display:flex; align-items:center; gap:8px;
+  }
+  #dot {
+    width:10px; height:10px; border-radius:50%;
+    background:#ff3333; box-shadow:0 0 8px #ff3333;
+    transition:all 0.3s;
+  }
+  #dot.on { background:#00ff88; box-shadow:0 0 8px #00ff88, 0 0 20px #00ff88; }
+  #handLabel {
+    font-family:'Courier New',monospace; font-size:10px;
+    letter-spacing:0.15em; color:rgba(255,255,255,0.5);
+  }
+
+  #boxCount {
+    font-family:'Courier New',monospace; font-size:11px;
+    letter-spacing:0.2em; color:rgba(0,245,255,0.6);
+  }
+
+  /* Gesture guide */
+  #gestureGuide {
+    position:absolute; bottom:50px; left:50%; transform:translateX(-50%);
+    display:flex; gap:clamp(10px,3vw,24px);
+  }
+  .gg {
+    display:flex; flex-direction:column; align-items:center; gap:3px;
+  }
+  .gg-i { font-size:clamp(16px,4.5vw,24px); line-height:1; }
+  .gg-t {
+    font-family:'Courier New',monospace; font-size:clamp(6px,1.5vw,9px);
+    color:rgba(0,245,255,0.5); letter-spacing:0.1em;
+    text-transform:uppercase; text-align:center; white-space:nowrap;
+  }
+
+  /* Corners */
+  .corner { position:absolute; width:24px; height:24px; opacity:0.5; }
+  .tl{top:6px;left:6px;border-top:1.5px solid #00f5ff;border-left:1.5px solid #00f5ff;}
+  .tr{top:6px;right:6px;border-top:1.5px solid #00f5ff;border-right:1.5px solid #00f5ff;}
+  .bl{bottom:6px;left:6px;border-bottom:1.5px solid #00f5ff;border-left:1.5px solid #00f5ff;}
+  .br{bottom:6px;right:6px;border-bottom:1.5px solid #00f5ff;border-right:1.5px solid #00f5ff;}
+</style>
+</head>
+<body>
+
+<!-- Layer 0: Camera feed (visible, mirrored) -->
+<video id="videoEl" playsinline autoplay muted></video>
+
+<!-- Layer 1: Dark overlay -->
+<div id="overlay"></div>
+
+<!-- Layer 2: Hand skeleton drawn here (2D canvas) -->
+<canvas id="handCanvas"></canvas>
+
+<!-- Layer 3: Three.js 3D boxes -->
+<canvas id="threeCanvas"></canvas>
+
+<!-- Layer 4: UI -->
+<div id="ui">
+  <div class="corner tl"></div>
+  <div class="corner tr"></div>
+  <div class="corner bl"></div>
+  <div class="corner br"></div>
+
+  <div id="title">DEVELOPER &nbsp;&nbsp; Mr.Hem</div>
+  <div id="gestureMsg"></div>
+
+  <div id="gestureGuide">
+    <div class="gg"><div class="gg-i">🤏</div><div class="gg-t">Pinch<br>Create</div></div>
+    <div class="gg"><div class="gg-i">🤌</div><div class="gg-t">Hold&Move<br>Drag</div></div>
+    <div class="gg"><div class="gg-i">🖐</div><div class="gg-t">Spread<br>Resize</div></div>
+    <div class="gg"><div class="gg-i">👊</div><div class="gg-t">Fist<br>Delete</div></div>
+  </div>
+
+  <div id="statusBar">
+    <div id="handStatus">
+      <div id="dot"></div>
+      <div id="handLabel">HAND TRACKING</div>
+    </div>
+    <div id="boxCount">BOXES: 0</div>
+  </div>
+</div>
+
+<!-- Scripts -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+
+<script>
+(function(){
+"use strict";
+
+var VW = window.innerWidth, VH = window.innerHeight;
+window.addEventListener('resize', function(){
+  VW = window.innerWidth; VH = window.innerHeight;
+  renderer.setSize(VW, VH);
+  threeCam.aspect = VW / VH;
+  threeCam.updateProjectionMatrix();
+  hCanvas.width  = VW; hCanvas.height = VH;
+});
+
+// ══════════════════════════════════════════════════
+// 2D HAND CANVAS (skeleton overlay)
+// ══════════════════════════════════════════════════
+var hCanvas = document.getElementById('handCanvas');
+hCanvas.width  = VW;
+hCanvas.height = VH;
+var hCtx = hCanvas.getContext('2d');
+
+// ══════════════════════════════════════════════════
+// THREE.JS SETUP
+// ══════════════════════════════════════════════════
+var threeCanvas = document.getElementById('threeCanvas');
+var renderer = new THREE.WebGLRenderer({ canvas: threeCanvas, antialias: false, alpha: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(VW, VH);
+renderer.setClearColor(0x000000, 0); // transparent so camera shows through
+
+var scene = new THREE.Scene();
+var threeCam = new THREE.PerspectiveCamera(60, VW / VH, 0.1, 200);
+threeCam.position.set(0, 0, 10);
+
+// Lights
+scene.add(new THREE.AmbientLight(0xffffff, 2));
+var pl1 = new THREE.PointLight(0x00f5ff, 5, 50); pl1.position.set(5,5,5); scene.add(pl1);
+var pl2 = new THREE.PointLight(0xff00cc, 4, 40); pl2.position.set(-5,-3,3); scene.add(pl2);
+
+// ── CIRCLE TEXTURE ────────────────────────────────
+function circleTex(c1,c2){
+  var cv=document.createElement('canvas'); cv.width=cv.height=64;
+  var cx=cv.getContext('2d');
+  var gd=cx.createRadialGradient(32,32,0,32,32,32);
+  gd.addColorStop(0,c1); gd.addColorStop(1,c2);
+  cx.fillStyle=gd; cx.beginPath(); cx.arc(32,32,32,0,Math.PI*2); cx.fill();
+  return new THREE.CanvasTexture(cv);
+}
+
+// ── SPARKLES ──────────────────────────────────────
+var SK=300, skPos=new Float32Array(SK*3), skCol=new Float32Array(SK*3);
+var skVel=[], skLf=new Float32Array(SK), skIdx=0;
+for(var i=0;i<SK;i++){ skPos[i*3]=9999; skVel.push(new THREE.Vector3()); }
+var skGeo=new THREE.BufferGeometry();
+skGeo.setAttribute('position',new THREE.BufferAttribute(skPos,3));
+skGeo.setAttribute('color',new THREE.BufferAttribute(skCol,3));
+scene.add(new THREE.Points(skGeo, new THREE.PointsMaterial({
+  size:.15, map:circleTex('rgba(255,255,255,1)','rgba(0,200,255,0)'),
+  vertexColors:true, blending:THREE.AdditiveBlending, depthWrite:false, transparent:true
+})));
+
+function spawnSparks(pos, col, n){
+  var r=(col>>16&0xff)/255, g=(col>>8&0xff)/255, b=(col&0xff)/255;
+  for(var k=0;k<(n||10);k++){
+    var i=skIdx%SK; skIdx++;
+    skPos[i*3]=pos.x; skPos[i*3+1]=pos.y; skPos[i*3+2]=pos.z;
+    skVel[i].set((Math.random()-.5)*.14,(Math.random()-.5)*.14,(Math.random()-.5)*.14);
+    skLf[i]=1; skCol[i*3]=r; skCol[i*3+1]=g; skCol[i*3+2]=b;
+  }
+}
+function updateSparks(){
+  for(var i=0;i<SK;i++){
+    if(skLf[i]<=0) continue;
+    skPos[i*3]+=skVel[i].x; skPos[i*3+1]+=skVel[i].y; skPos[i*3+2]+=skVel[i].z;
+    skLf[i]-=.035; if(skLf[i]<=0) skPos[i*3]=9999;
+  }
+  skGeo.attributes.position.needsUpdate=true;
+}
+
+// ── BOXES ─────────────────────────────────────────
+var boxGroup = new THREE.Group(); scene.add(boxGroup);
+var boxes = [];
+var BOX_COLS = [0x00f5ff, 0xff00aa, 0x00ff88, 0xffaa00, 0x8800ff, 0xff4466, 0xff8800, 0x44ffdd];
+var boxCountEl = document.getElementById('boxCount');
+
+function makeBox(pos){
+  var col = BOX_COLS[Math.floor(Math.random()*BOX_COLS.length)];
+  var sz  = 0.4 + Math.random()*0.35;
+  var g   = new THREE.Group();
+
+  g.add(new THREE.Mesh(
+    new THREE.BoxGeometry(sz,sz,sz),
+    new THREE.MeshPhongMaterial({ color:col, emissive:col, emissiveIntensity:.18, transparent:true, opacity:.15 })
+  ));
+  g.add(new THREE.LineSegments(
+    new THREE.EdgesGeometry(new THREE.BoxGeometry(sz,sz,sz)),
+    new THREE.LineBasicMaterial({ color:col })
+  ));
+  g.add(new THREE.Mesh(
+    new THREE.BoxGeometry(sz*1.2,sz*1.2,sz*1.2),
+    new THREE.MeshBasicMaterial({ color:col, transparent:true, opacity:.05, side:THREE.BackSide })
+  ));
+  var pl=new THREE.PointLight(col,2.5,4); g.add(pl);
+
+  g.position.copy(pos);
+  g.userData = {
+    col:col, sz:sz,
+    vel:new THREE.Vector3((Math.random()-.5)*.005,(Math.random()-.5)*.005,0),
+    rv: new THREE.Vector3(Math.random()*.012, Math.random()*.012, Math.random()*.006),
+    held:false
+  };
+  boxGroup.add(g); boxes.push(g);
+  boxCountEl.textContent = 'BOXES: '+boxes.length;
+  return g;
+}
+
+function deleteBox(b){
+  spawnSparks(b.position, b.userData.col, 25);
+  boxGroup.remove(b);
+  b.traverse(function(o){ if(o.geometry) o.geometry.dispose(); if(o.material) o.material.dispose(); });
+  var idx=boxes.indexOf(b); if(idx>-1) boxes.splice(idx,1);
+  boxCountEl.textContent = 'BOXES: '+boxes.length;
+}
+
+// ── COORDINATE MAPPING ────────────────────────────
+// MediaPipe gives 0-1 coords. We mirror X (because video is mirrored).
+// Map to Three.js world space.
+function lmToWorld(lm, idx){
+  // x: mediapipe 0=right,1=left → after mirror: 0=left,1=right
+  // we mirror by using (lm.x) directly since video is already flipped
+  var mx = lm[idx].x; // 0..1, already in mirrored space
+  var my = lm[idx].y; // 0..1
+  var x  = (mx - 0.5) * 13;
+  var y  = -(my - 0.5) * 13 * (VH / VW);
+  return new THREE.Vector3(x, y, 0);
+}
+
+function palmWorld(lm){ return lmToWorld(lm, 9); }
+
+function pinchDist(lm){
+  var tx=lm[4].x, ty=lm[4].y;
+  var ix=lm[8].x, iy=lm[8].y;
+  return Math.hypot(tx-ix, ty-iy);
+}
+function pinchStr(lm){ return Math.max(0, 1 - pinchDist(lm)*15); }
+
+function isFist(lm){
+  var closed=0;
+  var checks=[[8,6],[12,10],[16,14],[20,18]];
+  for(var i=0;i<checks.length;i++)
+    if(lm[checks[i][0]].y > lm[checks[i][1]].y + 0.03) closed++;
+  return closed>=3;
+}
+
+function getSpread(lm){
+  var tips=[4,8,12,16,20], mx=0;
+  for(var i=0;i<tips.length;i++) for(var j=i+1;j<tips.length;j++){
+    var d=Math.hypot(lm[tips[i]].x-lm[tips[j]].x, lm[tips[i]].y-lm[tips[j]].y);
+    if(d>mx) mx=d;
+  }
+  return mx;
+}
+
+// ── GESTURE MESSAGE HUD ───────────────────────────
+var gmEl=document.getElementById('gestureMsg'), gmT=null;
+function showMsg(txt,col){
+  gmEl.textContent=txt;
+  gmEl.style.color=col||'#ffcc00';
+  gmEl.style.textShadow='0 0 15px '+(col||'#ffcc00');
+  gmEl.style.opacity='1';
+  if(gmT) clearTimeout(gmT);
+  gmT=setTimeout(function(){ gmEl.style.opacity='0'; },900);
+}
+
+// ══════════════════════════════════════════════════
+// MEDIAPIPE HANDS
+// ══════════════════════════════════════════════════
+var handLM=null, prevLM=null;
+var dotEl=document.getElementById('dot');
+var video=document.getElementById('videoEl');
+
+var mpHands = new Hands({
+  locateFile: function(f){ return 'https://cdn.jsdelivr.net/npm/@mediapipe/hands/'+f; }
+});
+mpHands.setOptions({
+  maxNumHands: 1,
+  modelComplexity: 1,          // better tracking
+  minDetectionConfidence: 0.7,
+  minTrackingConfidence: 0.6
+});
+mpHands.onResults(function(results){
+  // Draw skeleton on 2D canvas
+  hCtx.clearRect(0,0,VW,VH);
+  prevLM = handLM;
+  if(results.multiHandLandmarks && results.multiHandLandmarks.length > 0){
+    handLM = results.multiHandLandmarks[0];
+    dotEl.className = 'on';
+
+    // Draw hand skeleton using drawConnectors / drawLandmarks if available
+    if(typeof drawConnectors !== 'undefined'){
+      drawConnectors(hCtx, handLM, HAND_CONNECTIONS, {color:'rgba(0,245,255,0.7)', lineWidth:2});
+      drawLandmarks(hCtx, handLM, {color:'rgba(255,200,0,0.9)', lineWidth:1, radius:4});
+    } else {
+      // Manual fallback skeleton
+      drawHandManual(handLM);
+    }
+  } else {
+    handLM = null;
+    dotEl.className = '';
+  }
+});
+
+function drawHandManual(lm){
+  // connections
+  var conns=[
+    [0,1],[1,2],[2,3],[3,4],
+    [0,5],[5,6],[6,7],[7,8],
+    [5,9],[9,10],[10,11],[11,12],
+    [9,13],[13,14],[14,15],[15,16],
+    [13,17],[17,18],[18,19],[19,20],[0,17]
+  ];
+  hCtx.strokeStyle='rgba(0,245,255,0.75)';
+  hCtx.lineWidth=2;
+  for(var c=0;c<conns.length;c++){
+    var a=conns[c][0], b=conns[c][1];
+    // note: handCanvas is scaleX(-1), so use lm.x directly (it matches the mirrored video)
+    hCtx.beginPath();
+    hCtx.moveTo(lm[a].x*VW, lm[a].y*VH);
+    hCtx.lineTo(lm[b].x*VW, lm[b].y*VH);
+    hCtx.stroke();
+  }
+  // dots on landmarks
+  for(var j=0;j<21;j++){
+    var col = (j===4||j===8) ? 'rgba(255,200,0,1)' : 'rgba(0,255,136,0.85)';
+    hCtx.fillStyle=col;
+    hCtx.beginPath();
+    hCtx.arc(lm[j].x*VW, lm[j].y*VH, j===0?6:4, 0, Math.PI*2);
+    hCtx.fill();
+  }
+}
+
+// Start camera
+navigator.mediaDevices.getUserMedia({
+  video: { facingMode:'user', width:{ideal:640}, height:{ideal:480} }
+}).then(function(stream){
+  video.srcObject = stream;
+  video.onloadedmetadata = function(){
+    video.play();
+    var mpCam = new Camera(video, {
+      onFrame: async function(){ await mpHands.send({image: video}); },
+      width: 640, height: 480
+    });
+    mpCam.start();
+  };
+}).catch(function(err){
+  console.error('Camera error:', err);
+  dotEl.style.background='#ffaa00';
+  dotEl.style.boxShadow='0 0 8px #ffaa00';
+  document.getElementById('handLabel').textContent='CAMERA ERROR — ALLOW PERMISSION';
+});
+
+// ══════════════════════════════════════════════════
+// MAIN ANIMATION LOOP
+// ══════════════════════════════════════════════════
+var heldBox   = null;
+var prevPinch = false;
+var createCD  = 0;
+var fistCD    = 0;
+var spreadActive = false;
+var t=0, last=performance.now();
+
+function loop(){
+  requestAnimationFrame(loop);
+  var now=performance.now(), dt=Math.min((now-last)/1000,.05);
+  last=now; t+=dt;
+  if(createCD>0) createCD--;
+
+  var lm      = handLM;
+  var isPinch = false, isFistNow=false, sp=0;
+  var palmW   = new THREE.Vector3();
+
+  if(lm){
+    palmW   = palmWorld(lm);
+    isPinch = pinchStr(lm) > 0.72;
+    isFistNow = isFist(lm);
+    sp      = getSpread(lm);
+  }
+
+  // ── FIST → Delete nearest ──────────────────────
+  if(lm && isFistNow && !isPinch){
+    fistCD++;
+    if(fistCD === 10){
+      var nearD=2.2, nearB=null;
+      for(var bi=0;bi<boxes.length;bi++){
+        var d=boxes[bi].position.distanceTo(palmW);
+        if(d<nearD){ nearD=d; nearB=boxes[bi]; }
+      }
+      if(nearB){ deleteBox(nearB); showMsg('💥  DELETED!','#ff4466'); }
+      fistCD=0;
+    }
+  } else { fistCD=0; }
+
+  // ── PINCH START → Create or Grab ───────────────
+  if(lm && isPinch && !prevPinch && createCD<=0){
+    var nearD2=1.6, nearB2=null;
+    for(var bi2=0;bi2<boxes.length;bi2++){
+      var d2=boxes[bi2].position.distanceTo(palmW);
+      if(d2<nearD2){ nearD2=d2; nearB2=boxes[bi2]; }
+    }
+    if(nearB2){
+      heldBox=nearB2; heldBox.userData.held=true;
+      showMsg('✊  GRABBED','#ffcc00');
+    } else {
+      heldBox=makeBox(palmW.clone());
+      heldBox.userData.held=true;
+      spawnSparks(palmW, heldBox.userData.col, 18);
+      showMsg('✨  CREATED!','#00ff88');
+      createCD=20;
+    }
+  }
+
+  // ── HOLDING → Move ─────────────────────────────
+  if(heldBox && isPinch && lm){
+    heldBox.position.lerp(palmW, 0.3);
+    if(prevLM){
+      heldBox.rotation.y += (lm[9].x - prevLM[9].x) * 12;
+      heldBox.rotation.x += (lm[9].y - prevLM[9].y) * 12;
+    }
+  }
+
+  // ── PINCH RELEASE → Drop ───────────────────────
+  if(!isPinch && prevPinch && heldBox){
+    heldBox.userData.held=false;
+    heldBox.userData.vel.set((Math.random()-.5)*.015, Math.random()*.01, 0);
+    spawnSparks(heldBox.position, heldBox.userData.col, 12);
+    showMsg('🎯  PLACED','#00f5ff');
+    heldBox=null;
+  }
+
+  // ── SPREAD → Resize nearest ────────────────────
+  if(lm && !isPinch && !isFistNow && sp>0.25 && boxes.length>0){
+    var nearD3=3.5, nearB3=null;
+    for(var bi3=0;bi3<boxes.length;bi3++){
+      if(boxes[bi3].userData.held) continue;
+      var d3=boxes[bi3].position.distanceTo(palmW);
+      if(d3<nearD3){ nearD3=d3; nearB3=boxes[bi3]; }
+    }
+    if(nearB3){
+      var ts=Math.max(0.2, Math.min(4.0, 0.3+sp*5.5));
+      nearB3.scale.lerp(new THREE.Vector3(ts,ts,ts), 0.1);
+      if(!spreadActive) showMsg('🌟  RESIZING','#ffaa00');
+      spreadActive=true;
+    }
+  } else { spreadActive=false; }
+
+  prevPinch = isPinch;
+  if(!lm && heldBox){ heldBox.userData.held=false; heldBox=null; }
+
+  // ── UPDATE BOXES ────────────────────────────────
+  for(var bi4=0;bi4<boxes.length;bi4++){
+    var b=boxes[bi4];
+    if(!b.userData.held){
+      b.position.add(b.userData.vel);
+      b.rotation.x+=b.userData.rv.x;
+      b.rotation.y+=b.userData.rv.y;
+      b.rotation.z+=b.userData.rv.z;
+      if(Math.abs(b.position.x)>6.5) b.userData.vel.x*=-.85;
+      if(Math.abs(b.position.y)>5.0) b.userData.vel.y*=-.85;
+      if(Math.random()<.015) spawnSparks(b.position,b.userData.col,2);
+    }
+  }
+
+  updateSparks();
+
+  // Animate lights
+  pl1.position.set(Math.sin(t*.4)*8, Math.cos(t*.3)*6, 5);
+  pl2.position.set(Math.cos(t*.35)*7, Math.sin(t*.5)*5, 4);
+
+  renderer.render(scene, threeCam);
+}
+
+loop();
+
+})();
+</script>
+</body>
+</html>
